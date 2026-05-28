@@ -30,10 +30,14 @@
 </head>
 <body>
 <div id="root"></div>
-
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script type="text/babel">
 const { useState, useEffect } = React;
+const supabaseUrl = 'https://oorwlubnccelrolxjoli.supabase.co';
 
+const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9vcndsdWJuY2NlbHJvbHhqb2xpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk5ODc4NDMsImV4cCI6MjA5NTU2Mzg0M30.NXJwC2ExxAjzZ-ZUDnQYG6rEfLClFrn4UKHoLXUv2a0';
+
+const supabase = window.supabase.createClient(supabaseUrl, supabaseAnonKey);
 const ResponsiveContainer = ({ children, height = 180 }) => (
   <div style={{ width: '100%', height }}>{children}</div>
 );
@@ -85,7 +89,39 @@ function storageLoad() {
 function storageSave(data) {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch {}
 }
+async function saveToSupabase(newData) {
+  const { data: userData } = await supabase.auth.getUser();
+  const user = userData.user;
+  if (!user) return;
 
+  const { error } = await supabase
+    .from('app_data')
+    .upsert({
+      user_id: user.id,
+      data: newData,
+      updated_at: new Date().toISOString()
+    });
+
+  if (error) console.error('Erreur sauvegarde Supabase:', error.message);
+}
+async function loadFromSupabase() {
+  const { data: userData } = await supabase.auth.getUser();
+  const user = userData.user;
+  if (!user) return null;
+
+  const { data, error } = await supabase
+    .from('app_data')
+    .select('data')
+    .eq('user_id', user.id)
+    .single();
+
+  if (error) {
+    console.log('Aucune donnée Supabase trouvée');
+    return null;
+  }
+
+  return data?.data || null;
+}
 // ─────────────────────────────────────────
 // UTILITAIRES
 // ─────────────────────────────────────────
@@ -108,18 +144,29 @@ function calcTonnage(session) {
 
 function calcAllPRs(data) {
   const prs = {};
+
   data.sessions.forEach(session =>
     session.exercises.forEach(ex => {
-      if (!prs[ex.name]) prs[ex.name] = { maxWeight: 0, maxReps: 0 };
       ex.sets.forEach(s => {
-        if ((s.weight || 0) > prs[ex.name].maxWeight) prs[ex.name].maxWeight = s.weight || 0;
-        if (s.reps > prs[ex.name].maxReps) prs[ex.name].maxReps = s.reps;
+        const weight = s.weight || 0;
+        const reps = s.reps || 0;
+
+        if (!prs[ex.name]) {
+          prs[ex.name] = { maxWeight: weight, repsAtMaxWeight: reps };
+        }
+
+        if (
+          weight > prs[ex.name].maxWeight ||
+          (weight === prs[ex.name].maxWeight && reps > prs[ex.name].repsAtMaxWeight)
+        ) {
+          prs[ex.name] = { maxWeight: weight, repsAtMaxWeight: reps };
+        }
       });
     })
   );
+
   return prs;
 }
-
 // ─────────────────────────────────────────
 // DONNÉES INITIALES
 // ─────────────────────────────────────────
@@ -221,6 +268,10 @@ const S = {
 // ─────────────────────────────────────────
 // COMPOSANT PRINCIPAL
 // ─────────────────────────────────────────
+async function testSupabase() {
+  const { data, error } = await supabase.from('sessions').select('*');
+  console.log('SUPABASE TEST:', { data, error });
+}
 function App() {
   // État de l'app
   const [data, setData] = useState(null);
@@ -230,7 +281,48 @@ function App() {
   // Navigation dans les séances
   const [sessionId, setSessionId] = useState(null);
   const [exerciseId, setExerciseId] = useState(null);
+  const [user, setUser] = useState(null);
+const [authEmail, setAuthEmail] = useState('');
+const [authPassword, setAuthPassword] = useState('');
 
+useEffect(() => {
+  testSupabase();
+}, []);
+useEffect(() => {
+  supabase.auth.getUser().then(({ data }) => {
+    setUser(data.user);
+  });
+
+  const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+    setUser(session?.user || null);
+  });
+
+  return () => {
+    listener.subscription.unsubscribe();
+  };
+}, []);
+async function signUp() {
+  const { error } = await supabase.auth.signUp({
+    email: authEmail,
+    password: authPassword,
+  });
+
+  if (error) alert(error.message);
+  else alert('Compte créé ! Vérifie ton email si demandé.');
+}
+
+async function signIn() {
+  const { error } = await supabase.auth.signInWithPassword({
+    email: authEmail,
+    password: authPassword,
+  });
+
+  if (error) alert(error.message);
+}
+
+async function signOut() {
+  await supabase.auth.signOut();
+}
   // Formulaire nouvelle séance
   const [showNewSession, setShowNewSession] = useState(false);
   const [newSessionName, setNewSessionName] = useState('');
@@ -257,15 +349,31 @@ function App() {
   const [routineName, setRoutineName] = useState('');
 
   // Chargement initial
-  useEffect(() => {
-    const loaded = { ...INITIAL_DATA, ...(storageLoad() || {}) };
+ useEffect(() => {
+  async function loadData() {
+    let loaded = await loadFromSupabase();
+
+    if (!loaded) {
+      loaded = { ...INITIAL_DATA, ...(storageLoad() || {}) };
+    }
+
+    loaded = { ...INITIAL_DATA, ...loaded };
+
     setData(loaded);
+
     const names = getAllExerciseNames(loaded);
     if (names.length > 0) setSelectedExercise(names[0]);
-  }, []);
+  }
+
+  loadData();
+}, [user]);
 
   // Sauvegarde à chaque modification
-  const update = newData => { setData(newData); storageSave(newData); };
+  const update = newData => {
+  setData(newData);
+  storageSave(newData);
+  saveToSupabase(newData);
+};
 
   // ── Helpers ──
   function getAllExerciseNames(d) {
@@ -307,7 +415,73 @@ function App() {
   const currentSession = data.sessions.find(s => s.id === sessionId);
   const currentExercise = currentSession?.exercises.find(e => e.id === exerciseId);
   const allPRs = calcAllPRs(data);
+if (!user) return (
+  <div style={{
+    minHeight: '100vh',
+    background: 'linear-gradient(180deg, #f3f4f6 0%, #ffffff 100%)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24
+  }}>
+    <div style={{
+      width: '100%',
+      maxWidth: 420,
+      background: '#fff',
+      borderRadius: 24,
+      padding: 28,
+      boxShadow: '0 12px 35px rgba(0,0,0,0.08)',
+      border: '1px solid #e5e7eb'
+    }}>
+      <div style={{ textAlign: 'center', marginBottom: 24 }}>
+        <div style={{ fontSize: 42, marginBottom: 8 }}>💪</div>
+        <h1 style={{ margin: 0, fontSize: 28 }}>The New Workout Plan</h1>
+        <p style={{ color: '#6b7280', marginTop: 8 }}>
+          Connecte-toi pour sauvegarder tes entraînements.
+        </p>
+      </div>
 
+      <input
+        placeholder="Email"
+        value={authEmail}
+        onChange={e => setAuthEmail(e.target.value)}
+        style={{ ...S.input, width: '100%', marginBottom: 12 }}
+      />
+
+      <input
+        placeholder="Mot de passe"
+        type="password"
+        value={authPassword}
+        onChange={e => setAuthPassword(e.target.value)}
+        style={{ ...S.input, width: '100%', marginBottom: 16 }}
+      />
+
+      <button
+        style={{ ...S.primaryBtn, width: '100%', marginBottom: 10 }}
+        onClick={() => supabase.auth.signInWithPassword({
+          email: authEmail,
+          password: authPassword
+        })}
+      >
+        Se connecter
+      </button>
+
+      <button
+        style={{ ...S.ghostBtn, width: '100%' }}
+        onClick={() => supabase.auth.signUp({
+          email: authEmail,
+          password: authPassword
+        })}
+      >
+        Créer un compte
+      </button>
+
+      <p style={{ fontSize: 12, color: '#9ca3af', textAlign: 'center', marginTop: 18 }}>
+        Tes données sont sauvegardées avec Supabase.
+      </p>
+    </div>
+  </div>
+);
   // ── Actions ──
 
   function addSession() {
@@ -449,7 +623,29 @@ function updateExerciseNote(id, note) {
     update({ ...data, bodyStats: [...(data.bodyStats || []), entry] });
     setNewBodyWeight('');
   }
+function deleteBodyWeight(id) {
+  update({
+    ...data,
+    bodyStats: (data.bodyStats || []).filter(w => w.id !== id)
+  });
+}
 
+function editBodyWeight(id) {
+  const current = (data.bodyStats || []).find(w => w.id === id);
+  if (!current) return;
+
+  const newWeight = prompt('Nouveau poids :', current.weight);
+  const weight = parseFloat(newWeight);
+
+  if (!weight || weight <= 0) return;
+
+  update({
+    ...data,
+    bodyStats: (data.bodyStats || []).map(w =>
+      w.id === id ? { ...w, weight } : w
+    )
+  });
+}
   function saveHeight() {
     const h = parseFloat(newHeight);
     if (!h || h <= 0) return;
@@ -499,7 +695,7 @@ function updateExerciseNote(id, note) {
             <h1 style={S.headerTitle}>{currentExercise.name}</h1>
             {pr && pr.maxWeight > 0 && (
               <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 10, background: '#fef3c7', color: '#92400e', fontWeight: 600, whiteSpace: 'nowrap' }}>
-                🏆 PR {pr.maxWeight} kg × {pr.maxReps}
+                🏆 PR {pr.maxWeight} kg × {pr.repsAtMaxWeight}
               </span>
             )}
           </div>
@@ -667,7 +863,7 @@ onBlur={(e) => updateExerciseNote(currentExercise.id, e.target.value)}
                     </div>
                     <div style={{ ...S.label, marginTop: 3 }}>
                       {ex.sets.length === 0
-                        ? (pr && pr.maxWeight > 0 ? `PR à battre : ${pr.maxWeight} kg × ${pr.maxReps}` : 'Aucune série')
+                        ? (pr && pr.maxWeight > 0 ? `PR à battre : ${pr.maxWeight} kg × ${pr.repsAtMaxWeight}` : 'Aucune série')
                         : `${ex.sets.length} série${ex.sets.length > 1 ? 's' : ''}${maxW > 0 ? ` · max ${maxW} kg` : ''}${exTonnage > 0 ? ` · tonnage ${exTonnage} kg` : ''}`
                       }
                     </div>
@@ -777,7 +973,7 @@ onBlur={(e) => updateExerciseNote(currentExercise.id, e.target.value)}
                       </div>
                       <div style={{ ...S.metric, background: '#eff6ff', border: '1px solid #bfdbfe' }}>
                         <div style={{ ...S.label, color: '#1d4ed8' }}>Max reps</div>
-                        <div style={{ fontSize: 22, fontWeight: 700, color: '#1d4ed8' }}>{pr.maxReps || '—'}</div>
+                        <div style={{ fontSize: 22, fontWeight: 700, color: '#1d4ed8' }}>{pr.repsAtMaxWeight || '—'}</div>
                       </div>
                     </div>
                   </div>
@@ -849,11 +1045,18 @@ onBlur={(e) => updateExerciseNote(currentExercise.id, e.target.value)}
               )}
               <div style={{ marginTop: 16 }}>
                 {[...(data.bodyStats || [])].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 20).map(s => (
-                  <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '9px 4px', borderBottom: '1px solid #f3f4f6' }}>
-                    <span style={S.label}>{formatDate(s.date)}</span>
-                    <span style={{ fontSize: 14, fontWeight: 600, color: '#111' }}>{s.weight} kg</span>
-                  </div>
-                ))}
+  <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '9px 4px', borderBottom: '1px solid #eee' }}>
+    <div>
+      <span style={S.label}>{formatDate(s.date)}</span>
+      <span style={{ marginLeft: 10, fontSize: 14, fontWeight: 600, color: '#111' }}>{s.weight} kg</span>
+    </div>
+
+    <div style={{ display: 'flex', gap: 6 }}>
+      <button style={S.ghostButton} onClick={() => editBodyWeight(s.id)}>Modifier</button>
+      <button style={S.dangerButton} onClick={() => deleteBodyWeight(s.id)}>Supprimer</button>
+    </div>
+  </div>
+))}
               </div>
             </div>
           )}
@@ -952,12 +1155,25 @@ onBlur={(e) => updateExerciseNote(currentExercise.id, e.target.value)}
   return (
     <div style={S.root}>
       <div style={S.header}>
-        {/* Titre de l'app — modifie ici pour changer le nom */}
-        <h1 style={{ ...S.headerTitle, fontSize: 22 }}>The New Workout Plan 💪</h1>
-        <p style={S.headerSubtitle}>
-          {data.sessions.length} séance{data.sessions.length !== 1 ? 's' : ''} enregistrée{data.sessions.length !== 1 ? 's' : ''}
-        </p>
-      </div>
+  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+    <div>
+      <h1 style={{ ...S.headerTitle, fontSize: 22 }}>The New Workout Plan 💪</h1>
+      <p style={S.headerSubtitle}>
+        {data.sessions.length} séance{data.sessions.length !== 1 ? 's' : ''} enregistrée{data.sessions.length !== 1 ? 's' : ''}
+      </p>
+      <p style={{ color: '#6b7280', fontSize: 13, marginTop: 4 }}>
+        {user?.email}
+      </p>
+    </div>
+
+    <button
+      style={S.secondaryBtn}
+      onClick={() => supabase.auth.signOut()}
+    >
+      Déconnexion
+    </button>
+  </div>
+</div>
 
       <div style={S.body}>
         {/* Formulaire nouvelle séance */}
