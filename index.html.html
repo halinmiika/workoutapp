@@ -1,0 +1,1080 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="The New Workout Plan">
+<title>The New Workout Plan</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
+<style>
+  /* ─────────────────────────────────────────
+     THE NEW WORKOUT PLAN — Global styles
+     Pour modifier les couleurs, cherche #16a34a (vert principal)
+     et remplace par la couleur de ton choix.
+  ───────────────────────────────────────── */
+  *  { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: #f3f4f6; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+  input, select, button, textarea { font-family: inherit; }
+  input:focus, select:focus { outline: 2px solid #16a34a; outline-offset: 1px; }
+  select option { background: #fff; color: #111; }
+  #root { min-height: 100vh; background: #f3f4f6; }
+  ::-webkit-scrollbar { width: 0; background: transparent; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+const ResponsiveContainer = ({ children, height = 180 }) => (
+  <div style={{ width: '100%', height }}>{children}</div>
+);
+
+const LineChart = ({ data = [], children }) => {
+  const values = data.map(d => d.maxW ?? d.poids ?? 0);
+  if (values.length === 0) return <div>Pas de données</div>;
+
+  const max = Math.max(...values);
+  const min = Math.min(...values);
+  const range = max - min || 1;
+
+  const points = values.map((v, i) => {
+    const x = 30 + (i * 240) / Math.max(values.length - 1, 1);
+    const y = 130 - ((v - min) * 100) / range;
+    return `${x},${y}`;
+  }).join(' ');
+
+  return (
+    <svg width="100%" height="160" viewBox="0 0 300 160">
+      <polyline points={points} fill="none" stroke="#16a34a" strokeWidth="3" />
+      {values.map((v, i) => {
+        const x = 30 + (i * 240) / Math.max(values.length - 1, 1);
+        const y = 130 - ((v - min) * 100) / range;
+        return <circle key={i} cx={x} cy={y} r="4" fill="#16a34a" />;
+      })}
+    </svg>
+  );
+};
+
+const Line = () => null;
+const XAxis = () => null;
+const YAxis = () => null;
+const Tooltip = () => null;
+const CartesianGrid = () => null;
+
+// ─────────────────────────────────────────
+// STOCKAGE — localStorage (fonctionne hors-ligne)
+// ─────────────────────────────────────────
+const STORAGE_KEY = "tnwp-v1"; // change cette clé si tu veux repartir de zéro
+
+function storageLoad() {
+  try {
+    const s = localStorage.getItem(STORAGE_KEY);
+    return s ? JSON.parse(s) : null;
+  } catch { return null; }
+}
+
+function storageSave(data) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch {}
+}
+
+// ─────────────────────────────────────────
+// UTILITAIRES
+// ─────────────────────────────────────────
+function uid() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+}
+
+const formatDate = iso =>
+  new Date(iso).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: '2-digit' });
+
+const formatDateShort = iso =>
+  new Date(iso).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short' });
+
+function calcTonnage(session) {
+  return session.exercises.reduce(
+    (total, ex) => total + ex.sets.reduce((a, s) => a + (s.weight || 0) * s.reps, 0),
+    0
+  );
+}
+
+function calcAllPRs(data) {
+  const prs = {};
+  data.sessions.forEach(session =>
+    session.exercises.forEach(ex => {
+      if (!prs[ex.name]) prs[ex.name] = { maxWeight: 0, maxReps: 0 };
+      ex.sets.forEach(s => {
+        if ((s.weight || 0) > prs[ex.name].maxWeight) prs[ex.name].maxWeight = s.weight || 0;
+        if (s.reps > prs[ex.name].maxReps) prs[ex.name].maxReps = s.reps;
+      });
+    })
+  );
+  return prs;
+}
+
+// ─────────────────────────────────────────
+// DONNÉES INITIALES
+// ─────────────────────────────────────────
+const INITIAL_DATA = {
+  sessions: [],
+  bodyStats: [],
+  height: '',
+  routines: [],
+  appNote: '',
+  exerciseLibrary: []
+};
+
+// ─────────────────────────────────────────
+// STYLES (modifie ici pour changer l'apparence)
+// ─────────────────────────────────────────
+const S = {
+  // Conteneur principal
+  root: { fontFamily: 'inherit', maxWidth: 500, margin: '0 auto', paddingBottom: 72, minHeight: '100vh', background: '#f3f4f6' },
+
+  // En-tête de page
+  header: { padding: '16px 16px 12px', background: '#fff', borderBottom: '1px solid #e5e7eb' },
+  headerTitle: { fontSize: 20, fontWeight: 700, color: '#111' },
+  headerSubtitle: { fontSize: 12, color: '#6b7280', marginTop: 3 },
+
+  // Corps de page
+  body: { padding: '10px 14px' },
+
+  // Carte blanche
+  card: {
+    background: '#fff', border: '1px solid #e5e7eb',
+    borderRadius: 14, padding: '13px 15px', marginBottom: 9,
+    boxShadow: '0 1px 3px rgba(0,0,0,0.04)'
+  },
+
+  // Ligne flex
+  row: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
+
+  // Textes
+  label: { fontSize: 12, color: '#6b7280' },
+  value: { fontSize: 15, fontWeight: 600, color: '#111' },
+
+  // Champ de saisie
+  input: {
+    flex: 1, padding: '10px 12px', fontSize: 15, borderRadius: 10,
+    border: '1px solid #d1d5db', background: '#f9fafb', color: '#111',
+    minWidth: 0, outline: 'none'
+  },
+
+  // Bouton vert principal — change #16a34a pour une autre couleur
+  greenButton: {
+    padding: '10px 18px', fontSize: 14, fontWeight: 700, cursor: 'pointer',
+    borderRadius: 10, border: 'none', background: '#16a34a', color: '#fff', whiteSpace: 'nowrap'
+  },
+
+  // Bouton icône discret
+  ghostButton: {
+    background: 'none', border: 'none', cursor: 'pointer',
+    color: '#9ca3af', padding: '5px 7px', fontSize: 18, lineHeight: 1, borderRadius: 6
+  },
+
+  // Bouton retour
+  backButton: {
+    background: 'none', border: 'none', cursor: 'pointer',
+    color: '#16a34a', fontSize: 14, fontWeight: 600,
+    padding: 0, display: 'flex', alignItems: 'center', gap: 5
+  },
+
+  // Bouton pointillé "Ajouter"
+  dashedButton: {
+    width: '100%', padding: '11px', marginTop: 5, fontSize: 14, cursor: 'pointer',
+    borderRadius: 10, border: '1.5px dashed #d1d5db', background: 'transparent', color: '#9ca3af'
+  },
+
+  // Carte de métrique (nombre mis en avant)
+  metric: { flex: 1, background: '#f3f4f6', borderRadius: 10, padding: '11px 8px', textAlign: 'center' },
+
+  // Bouton de mode (Vide / Routine / Copier)
+  modeButton: active => ({
+    flex: 1, padding: '8px 4px', fontSize: 12, cursor: 'pointer', borderRadius: 8,
+    border: active ? '2px solid #16a34a' : '1px solid #d1d5db',
+    background: active ? '#f0fdf4' : 'transparent',
+    color: active ? '#16a34a' : '#6b7280', fontWeight: active ? 700 : 400
+  }),
+
+  // Ligne de série dans l'exercice
+  setRow: {
+    display: 'flex', alignItems: 'center', gap: 10,
+    padding: '9px 2px', borderBottom: '1px solid #f3f4f6'
+  },
+
+  // Bouton de navigation (bas de page)
+  navButton: active => ({
+    flex: 1, padding: '10px 0 8px', border: 'none', background: 'none', cursor: 'pointer',
+    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3,
+    color: active ? '#16a34a' : '#9ca3af', fontSize: 10, fontWeight: active ? 700 : 400
+  }),
+};
+
+// ─────────────────────────────────────────
+// COMPOSANT PRINCIPAL
+// ─────────────────────────────────────────
+function App() {
+  // État de l'app
+  const [data, setData] = useState(null);
+  const [tab, setTab] = useState('sessions');      // onglet actif: sessions | stats | profile
+  const [statsSubTab, setStatsSubTab] = useState('records'); // sous-onglet stats: records | curves | body
+
+  // Navigation dans les séances
+  const [sessionId, setSessionId] = useState(null);
+  const [exerciseId, setExerciseId] = useState(null);
+
+  // Formulaire nouvelle séance
+  const [showNewSession, setShowNewSession] = useState(false);
+  const [newSessionName, setNewSessionName] = useState('');
+  const [newSessionMode, setNewSessionMode] = useState('empty'); // empty | routine | copy
+  const [newSessionFrom, setNewSessionFrom] = useState('');
+
+  // Formulaire nouvel exercice
+  const [showNewExercise, setShowNewExercise] = useState(false);
+  const [newExerciseName, setNewExerciseName] = useState('');
+
+  // Formulaire nouvelle série
+  const [newWeight, setNewWeight] = useState('');
+  const [newReps, setNewReps] = useState('');
+
+  // Formulaire profil
+  const [newBodyWeight, setNewBodyWeight] = useState('');
+  const [newHeight, setNewHeight] = useState('');
+
+  // Stats
+  const [selectedExercise, setSelectedExercise] = useState('');
+
+  // Routine
+  const [showSaveRoutine, setShowSaveRoutine] = useState(false);
+  const [routineName, setRoutineName] = useState('');
+
+  // Chargement initial
+  useEffect(() => {
+    const loaded = { ...INITIAL_DATA, ...(storageLoad() || {}) };
+    setData(loaded);
+    const names = getAllExerciseNames(loaded);
+    if (names.length > 0) setSelectedExercise(names[0]);
+  }, []);
+
+  // Sauvegarde à chaque modification
+  const update = newData => { setData(newData); storageSave(newData); };
+
+  // ── Helpers ──
+  function getAllExerciseNames(d) {
+    const set = new Set();
+    (d || data).sessions.forEach(s => s.exercises.forEach(e => set.add(e.name)));
+    return [...set].sort();
+  }
+
+  function getExerciseHistory(name) {
+    if (!data) return [];
+    return data.sessions
+      .filter(s => s.exercises.some(e => e.name === name && e.sets.length > 0))
+      .map(s => {
+        const ex = s.exercises.find(e => e.name === name);
+        const maxW = Math.max(...ex.sets.map(st => st.weight || 0));
+        return { date: formatDateShort(s.date), maxW, raw: s.date };
+      })
+      .sort((a, b) => a.raw.localeCompare(b.raw));
+  }
+
+  function getPreviousWeight(exName, currentSessionId) {
+    if (!data) return null;
+    const previous = data.sessions
+      .filter(s => s.id !== currentSessionId)
+      .sort((a, b) => b.date.localeCompare(a.date));
+    for (const s of previous) {
+      const ex = s.exercises.find(e => e.name === exName);
+      if (ex && ex.sets.length > 0) return Math.max(...ex.sets.map(st => st.weight || 0));
+    }
+    return null;
+  }
+
+  if (!data) return (
+    <div style={{ padding: '4rem', textAlign: 'center', color: '#9ca3af', fontSize: 15 }}>
+      Chargement...
+    </div>
+  );
+
+  const currentSession = data.sessions.find(s => s.id === sessionId);
+  const currentExercise = currentSession?.exercises.find(e => e.id === exerciseId);
+  const allPRs = calcAllPRs(data);
+
+  // ── Actions ──
+
+  function addSession() {
+    if (!newSessionName.trim()) return;
+    let exercises = [];
+    if (newSessionMode === 'routine' && newSessionFrom) {
+      const routine = data.routines.find(r => r.id === newSessionFrom);
+      if (routine) exercises = routine.exercises.map(n => ({ id: uid(), name: n, sets: [] }));
+    } else if (newSessionMode === 'copy' && newSessionFrom) {
+      const src = data.sessions.find(s => s.id === newSessionFrom);
+      if (src) exercises = src.exercises.map(ex => ({ id: uid(), name: ex.name, sets: [] }));
+    }
+    const session = { id: uid(), name: newSessionName.trim(), date: new Date().toISOString(), note: '', exercises };
+    update({ ...data, sessions: [session, ...data.sessions] });
+    setNewSessionName(''); setShowNewSession(false); setNewSessionMode('empty'); setNewSessionFrom('');
+    setSessionId(session.id);
+  }
+
+  function deleteSession(id) {
+    update({ ...data, sessions: data.sessions.filter(s => s.id !== id) });
+    if (sessionId === id) setSessionId(null);
+  }
+
+  function saveRoutine() {
+    if (!routineName.trim() || !currentSession) return;
+    const routine = { id: uid(), name: routineName.trim(), exercises: currentSession.exercises.map(e => e.name) };
+    update({ ...data, routines: [...(data.routines || []), routine] });
+    setRoutineName(''); setShowSaveRoutine(false);
+  }
+
+  function deleteRoutine(id) {
+    update({ ...data, routines: data.routines.filter(r => r.id !== id) });
+  }
+
+  function addExercise() {
+  if (!newExerciseName.trim() || !currentSession) return;
+
+  const name = newExerciseName.trim();
+
+  const ex = {
+    id: uid(),
+    name,
+    note: '',
+    sets: []
+  };
+
+  const alreadyInLibrary = (data.exerciseLibrary || []).some(
+    e => e.name.toLowerCase() === name.toLowerCase()
+  );
+
+  update({
+    ...data,
+    sessions: data.sessions.map(s =>
+      s.id === sessionId
+        ? { ...s, exercises: [...s.exercises, ex] }
+        : s
+    ),
+    exerciseLibrary: alreadyInLibrary
+      ? data.exerciseLibrary
+      : [...(data.exerciseLibrary || []), { id: uid(), name, note: '' }]
+  });
+
+  setNewExerciseName('');
+  setShowNewExercise(false);
+}
+
+  function deleteExercise(eid) {
+    update({ ...data, sessions: data.sessions.map(s => s.id === sessionId ? { ...s, exercises: s.exercises.filter(e => e.id !== eid) } : s) });
+    if (exerciseId === eid) setExerciseId(null);
+  }
+function renameSession(id) {
+  const current = data.sessions.find(s => s.id === id);
+  if (!current) return;
+
+  const newName = prompt('Nouveau nom de la séance :', current.name);
+  if (!newName || !newName.trim()) return;
+
+  update({
+    ...data,
+    sessions: data.sessions.map(s =>
+      s.id === id ? { ...s, name: newName.trim() } : s
+    )
+  });
+}
+
+function renameExercise(id) {
+  const current = currentSession.exercises.find(e => e.id === id);
+  if (!current) return;
+
+  const newName = prompt('Nouveau nom de l’exercice :', current.name);
+  if (!newName || !newName.trim()) return;
+
+  update({
+    ...data,
+    sessions: data.sessions.map(s =>
+      s.id === sessionId
+        ? {
+            ...s,
+            exercises: s.exercises.map(e =>
+              e.id === id ? { ...e, name: newName.trim() } : e
+            )
+          }
+        : s
+    )
+  });
+}
+function updateExerciseNote(id, note) {
+  update({
+    ...data,
+    sessions: data.sessions.map(s =>
+      s.id === sessionId
+        ? {
+            ...s,
+            exercises: s.exercises.map(e =>
+              e.id === id ? { ...e, note } : e
+            )
+          }
+        : s
+    )
+  });
+}
+  function addSet() {
+    const reps = parseInt(newReps);
+    if (!reps || reps <= 0) return;
+    const weight = parseFloat(newWeight) || 0;
+    const set = { id: uid(), weight, reps };
+    update({ ...data, sessions: data.sessions.map(s => s.id === sessionId ? { ...s, exercises: s.exercises.map(e => e.id === exerciseId ? { ...e, sets: [...e.sets, set] } : e) } : s) });
+    setNewReps('');
+  }
+
+  function deleteSet(setId) {
+    update({ ...data, sessions: data.sessions.map(s => s.id === sessionId ? { ...s, exercises: s.exercises.map(e => e.id === exerciseId ? { ...e, sets: e.sets.filter(st => st.id !== setId) } : e) } : s) });
+  }
+
+  function addBodyWeight() {
+    const w = parseFloat(newBodyWeight);
+    if (!w || w <= 0) return;
+    const entry = { id: uid(), date: new Date().toISOString(), weight: w };
+    update({ ...data, bodyStats: [...(data.bodyStats || []), entry] });
+    setNewBodyWeight('');
+  }
+
+  function saveHeight() {
+    const h = parseFloat(newHeight);
+    if (!h || h <= 0) return;
+    update({ ...data, height: h }); setNewHeight('');
+  }
+
+  function goToTab(t) { setTab(t); setSessionId(null); setExerciseId(null); }
+
+  // ── Navigation ──
+  const BottomNav = () => (
+    <nav style={{
+      position: 'fixed', bottom: 0, left: 0, right: 0,
+      display: 'flex', borderTop: '1px solid #e5e7eb', background: '#fff', zIndex: 200,
+      paddingBottom: 'env(safe-area-inset-bottom, 0px)'
+    }}>
+      {[
+        ['sessions', 'ti-calendar', 'Séances'],
+        ['stats',    'ti-trophy',   'Stats'],
+        ['profile',  'ti-user',     'Profil'],
+      ].map(([t, icon, label]) => (
+        <button key={t} style={S.navButton(tab === t)} onClick={() => goToTab(t)}>
+          <i className={`ti ${icon}`} style={{ fontSize: 24 }} aria-hidden="true"></i>
+          {label}
+        </button>
+      ))}
+    </nav>
+  );
+
+  // ══════════════════════════════════════════════
+  // VUE : Détail d'un exercice
+  // ══════════════════════════════════════════════
+  if (exerciseId && currentSession && currentExercise) {
+    const prevW = getPreviousWeight(currentExercise.name, sessionId);
+    const pr = allPRs[currentExercise.name];
+    const maxWeight = currentExercise.sets.length > 0 ? Math.max(...currentExercise.sets.map(s => s.weight || 0)) : 0;
+    const totalReps = currentExercise.sets.reduce((a, s) => a + s.reps, 0);
+    const tonnage = currentExercise.sets.reduce((a, s) => a + (s.weight || 0) * s.reps, 0);
+
+    return (
+      <div style={S.root}>
+        <div style={S.header}>
+          <button style={S.backButton} onClick={() => setExerciseId(null)}>
+            <i className="ti ti-arrow-left" aria-hidden="true"></i>
+            {currentSession.name}
+          </button>
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginTop: 10, gap: 8 }}>
+            <h1 style={S.headerTitle}>{currentExercise.name}</h1>
+            {pr && pr.maxWeight > 0 && (
+              <span style={{ fontSize: 11, padding: '3px 8px', borderRadius: 10, background: '#fef3c7', color: '#92400e', fontWeight: 600, whiteSpace: 'nowrap' }}>
+                🏆 PR {pr.maxWeight} kg × {pr.maxReps}
+              </span>
+            )}
+          </div>
+          <textarea
+  placeholder="Note / commentaire sur cet exercice..."
+  defaultValue={currentExercise.note || ''}
+onBlur={(e) => updateExerciseNote(currentExercise.id, e.target.value)}
+
+  style={{
+    width: '100%',
+    minHeight: 70,
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 12,
+    border: '1px solid #ddd',
+    fontSize: 14,
+    resize: 'vertical'
+  }}
+/>
+          {prevW !== null && (
+            <p style={S.headerSubtitle}>
+              Dernière séance : {prevW > 0 ? `${prevW} kg` : 'poids corps'}
+            </p>
+          )}
+        </div>
+
+        <div style={S.body}>
+          {/* Formulaire ajout série */}
+          <div style={{ display: 'flex', gap: 8, marginTop: 10, marginBottom: 14 }}>
+            <input
+              style={{ ...S.input, maxWidth: 100 }}
+              type="number" inputMode="decimal" placeholder="kg"
+              value={newWeight} onChange={e => setNewWeight(e.target.value)}
+            />
+            <input
+              style={{ ...S.input, maxWidth: 90 }}
+              type="number" inputMode="numeric" placeholder="reps"
+              value={newReps} onChange={e => setNewReps(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && addSet()}
+            />
+            <button style={S.greenButton} onClick={addSet}>
+              <i className="ti ti-plus" aria-hidden="true"></i> Série
+            </button>
+          </div>
+
+          {currentExercise.sets.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '40px 0', color: '#9ca3af' }}>
+              <i className="ti ti-barbell" style={{ fontSize: 48, color: '#e5e7eb', display: 'block', marginBottom: 10 }} aria-hidden="true"></i>
+              <p style={{ fontSize: 14 }}>Aucune série — commence !</p>
+            </div>
+          ) : (
+            <>
+              <p style={{ ...S.label, marginBottom: 6 }}>Séries</p>
+              {currentExercise.sets.map((set, i) => {
+                const isNewPR = pr && set.weight > 0 && set.weight >= pr.maxWeight && pr.maxWeight > 0;
+                return (
+                  <div key={set.id} style={S.setRow}>
+                    <span style={{ width: 24, fontSize: 12, color: '#9ca3af', textAlign: 'center', flexShrink: 0, fontWeight: 600 }}>
+                      {i + 1}
+                    </span>
+                    <span style={{
+                      flex: 1, fontSize: 15, fontWeight: 600, padding: '6px 14px', borderRadius: 22,
+                      background: isNewPR ? '#fef3c7' : '#dcfce7',
+                      color: isNewPR ? '#92400e' : '#15803d'
+                    }}>
+                      {set.weight > 0 ? `${set.weight} kg` : 'Poids corps'} × {set.reps} reps
+                      {isNewPR ? ' 🏆' : ''}
+                    </span>
+                    <button style={S.ghostButton} onClick={() => deleteSet(set.id)}>
+                      <i className="ti ti-x" style={{ color: '#d1d5db', fontSize: 16 }} aria-hidden="true"></i>
+                    </button>
+                  </div>
+                );
+              })}
+
+              {/* Résumé de l'exercice */}
+              <div style={{ display: 'flex', gap: 8, marginTop: 18 }}>
+                <div style={S.metric}>
+                  <div style={S.label}>Séries</div>
+                  <div style={{ fontSize: 22, fontWeight: 700 }}>{currentExercise.sets.length}</div>
+                </div>
+                <div style={S.metric}>
+                  <div style={S.label}>Max charge</div>
+                  <div style={{ fontSize: 22, fontWeight: 700 }}>
+                    {maxWeight > 0 ? maxWeight : '—'}
+                    {maxWeight > 0 && <span style={{ fontSize: 12 }}> kg</span>}
+                  </div>
+                </div>
+                <div style={S.metric}>
+                  <div style={S.label}>Tonnage</div>
+                  <div style={{ fontSize: 22, fontWeight: 700 }}>
+                    {tonnage}<span style={{ fontSize: 12 }}> kg</span>
+                  </div>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                <div style={S.metric}>
+                  <div style={S.label}>Total reps</div>
+                  <div style={{ fontSize: 22, fontWeight: 700 }}>{totalReps}</div>
+                </div>
+                <div style={{ ...S.metric, flex: 2 }}>
+                  <div style={S.label}>Volume moyen / série</div>
+                  <div style={{ fontSize: 22, fontWeight: 700 }}>
+                    {currentExercise.sets.length > 0 ? Math.round(tonnage / currentExercise.sets.length) : 0}
+                    <span style={{ fontSize: 12 }}> kg</span>
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+        <BottomNav />
+      </div>
+    );
+  }
+
+  // ══════════════════════════════════════════════
+  // VUE : Détail d'une séance
+  // ══════════════════════════════════════════════
+  if (sessionId && currentSession) {
+    const tonnage = calcTonnage(currentSession);
+    const totalSets = currentSession.exercises.reduce((a, e) => a + e.sets.length, 0);
+
+    return (
+      <div style={S.root}>
+        <div style={S.header}>
+          <button style={S.backButton} onClick={() => setSessionId(null)}>
+            <i className="ti ti-arrow-left" aria-hidden="true"></i> Séances
+          </button>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 10, gap: 8 }}>
+            <div>
+              <h1 style={S.headerTitle}>{currentSession.name}</h1>
+              <p style={S.headerSubtitle}>
+                {formatDate(currentSession.date)} · {totalSets} série{totalSets !== 1 ? 's' : ''}
+              </p>
+            </div>
+            {tonnage > 0 && (
+              <span style={{ fontSize: 11, padding: '3px 9px', borderRadius: 12, background: '#dbeafe', color: '#1d4ed8', fontWeight: 600, whiteSpace: 'nowrap' }}>
+                {tonnage} kg tonnage
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div style={S.body}>
+          {currentSession.exercises.length === 0 && (
+            <p style={{ color: '#9ca3af', fontSize: 14, textAlign: 'center', padding: '20px 0' }}>
+              Aucun exercice — ajoute le premier ci-dessous.
+            </p>
+          )}
+
+          {currentSession.exercises.map(ex => {
+            const maxW = ex.sets.length > 0 ? Math.max(...ex.sets.map(s => s.weight || 0)) : null;
+            const pr = allPRs[ex.name];
+            const isPR = maxW !== null && pr && maxW > 0 && maxW >= pr.maxWeight && pr.maxWeight > 0;
+            const exTonnage = ex.sets.reduce((a, s) => a + (s.weight || 0) * s.reps, 0);
+
+            return (
+              <div key={ex.id} style={{ ...S.card, cursor: 'pointer' }} onClick={() => setExerciseId(ex.id)}>
+                <div style={S.row}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <div style={S.value}>{ex.name}</div>
+                      {isPR && <span style={{ fontSize: 14 }}>🏆</span>}
+                    </div>
+                    <div style={{ ...S.label, marginTop: 3 }}>
+                      {ex.sets.length === 0
+                        ? (pr && pr.maxWeight > 0 ? `PR à battre : ${pr.maxWeight} kg × ${pr.maxReps}` : 'Aucune série')
+                        : `${ex.sets.length} série${ex.sets.length > 1 ? 's' : ''}${maxW > 0 ? ` · max ${maxW} kg` : ''}${exTonnage > 0 ? ` · tonnage ${exTonnage} kg` : ''}`
+                      }
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <button style={S.ghostButton} onClick={e => { e.stopPropagation(); renameExercise(ex.id); }}>
+  <i className="ti ti-pencil" style={{ fontSize: 17, color: '#6b7280' }} aria-hidden="true"></i>
+</button>
+                    <button style={S.ghostButton} onClick={e => { e.stopPropagation(); deleteExercise(ex.id); }}>
+                      <i className="ti ti-trash" style={{ fontSize: 17, color: '#ef4444' }} aria-hidden="true"></i>
+                    </button>
+                    <i className="ti ti-chevron-right" style={{ color: '#d1d5db', fontSize: 20 }} aria-hidden="true"></i>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+
+          {showNewExercise ? (
+            <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+              <input
+                style={S.input} placeholder="Développé couché, Squat..."
+                value={newExerciseName} onChange={e => setNewExerciseName(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && addExercise()} autoFocus
+              />
+              <button style={S.greenButton} onClick={addExercise}>OK</button>
+              <button style={S.ghostButton} onClick={() => { setShowNewExercise(false); setNewExerciseName(''); }}>
+                <i className="ti ti-x" aria-hidden="true"></i>
+              </button>
+            </div>
+          ) : (
+            <button style={S.dashedButton} onClick={() => setShowNewExercise(true)}>
+              <i className="ti ti-plus" aria-hidden="true"></i> Ajouter un exercice
+            </button>
+          )}
+
+          {/* Sauvegarder comme routine */}
+          <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid #f3f4f6' }}>
+            {showSaveRoutine ? (
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input
+                  style={S.input} placeholder="Nom de la routine (ex: Push Day)"
+                  value={routineName} onChange={e => setRoutineName(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && saveRoutine()} autoFocus
+                />
+                <button style={S.greenButton} onClick={saveRoutine}>Sauver</button>
+                <button style={S.ghostButton} onClick={() => { setShowSaveRoutine(false); setRoutineName(''); }}>
+                  <i className="ti ti-x" aria-hidden="true"></i>
+                </button>
+              </div>
+            ) : (
+              <button
+                style={{ width: '100%', padding: '10px', fontSize: 13, cursor: 'pointer', borderRadius: 10, border: '1px solid #e5e7eb', background: 'transparent', color: '#6b7280', fontWeight: 500 }}
+                onClick={() => setShowSaveRoutine(true)}
+              >
+                <i className="ti ti-bookmark" aria-hidden="true"></i> Sauvegarder comme routine
+              </button>
+            )}
+          </div>
+        </div>
+        <BottomNav />
+      </div>
+    );
+  }
+
+  // ══════════════════════════════════════════════
+  // ONGLET : Stats & Records
+  // ══════════════════════════════════════════════
+  if (tab === 'stats') {
+    const allExNames = getAllExerciseNames(data);
+    const sel = selectedExercise || allExNames[0] || '';
+    const history = sel ? getExerciseHistory(sel) : [];
+    const bwData = [...(data.bodyStats || [])].sort((a, b) => a.date.localeCompare(b.date)).map(b => ({ date: formatDateShort(b.date), poids: b.weight }));
+    const prEntries = Object.entries(allPRs).sort((a, b) => a[0].localeCompare(b[0]));
+
+    return (
+      <div style={S.root}>
+        <div style={S.header}>
+          <h1 style={S.headerTitle}>Stats & Records</h1>
+          <div style={{ display: 'flex', gap: 6, marginTop: 12 }}>
+            <button style={S.modeButton(statsSubTab === 'records')} onClick={() => setStatsSubTab('records')}>🏆 Records</button>
+            <button style={S.modeButton(statsSubTab === 'curves')}  onClick={() => setStatsSubTab('curves')}>📈 Courbes</button>
+            <button style={S.modeButton(statsSubTab === 'body')}    onClick={() => setStatsSubTab('body')}>⚖️ Poids</button>
+          </div>
+        </div>
+
+        <div style={S.body}>
+          {/* Records */}
+          {statsSubTab === 'records' && (
+            prEntries.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '50px 0', color: '#9ca3af' }}>
+                <i className="ti ti-trophy" style={{ fontSize: 48, color: '#e5e7eb', display: 'block', marginBottom: 10 }} aria-hidden="true"></i>
+                <p style={{ fontSize: 14 }}>Aucun record — lance une séance !</p>
+              </div>
+            ) : (
+              <div style={{ marginTop: 10 }}>
+                <p style={{ ...S.label, marginBottom: 10 }}>Tes records personnels ({prEntries.length} exercices)</p>
+                {prEntries.map(([name, pr]) => (
+                  <div key={name} style={S.card}>
+                    <div style={{ ...S.value, marginBottom: 10, fontSize: 16 }}>{name}</div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <div style={{ ...S.metric, background: '#fffbeb', border: '1px solid #fde68a' }}>
+                        <div style={{ ...S.label, color: '#92400e' }}>Max charge</div>
+                        <div style={{ fontSize: 22, fontWeight: 700, color: '#92400e' }}>
+                          {pr.maxWeight > 0 ? pr.maxWeight : '—'}{pr.maxWeight > 0 && <span style={{ fontSize: 12 }}> kg</span>}
+                        </div>
+                      </div>
+                      <div style={{ ...S.metric, background: '#eff6ff', border: '1px solid #bfdbfe' }}>
+                        <div style={{ ...S.label, color: '#1d4ed8' }}>Max reps</div>
+                        <div style={{ fontSize: 22, fontWeight: 700, color: '#1d4ed8' }}>{pr.maxReps || '—'}</div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )
+          )}
+
+          {/* Courbes */}
+          {statsSubTab === 'curves' && (
+            allExNames.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '50px 0', color: '#9ca3af' }}>
+                <i className="ti ti-chart-line" style={{ fontSize: 48, color: '#e5e7eb', display: 'block', marginBottom: 10 }} aria-hidden="true"></i>
+                <p style={{ fontSize: 14 }}>Pas encore de données.</p>
+              </div>
+            ) : (
+              <>
+                <div style={{ marginTop: 10, marginBottom: 14 }}>
+                  <p style={{ ...S.label, marginBottom: 7 }}>Exercice</p>
+                  <select style={{ ...S.input, width: '100%' }} value={sel} onChange={e => setSelectedExercise(e.target.value)}>
+                    {allExNames.map(n => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                </div>
+                {history.length < 2 ? (
+                  <div style={{ padding: '16px', background: '#f9fafb', borderRadius: 10, textAlign: 'center' }}>
+                    <p style={{ color: '#9ca3af', fontSize: 13 }}>
+                      Il faut au moins 2 séances<br />avec "{sel}" pour afficher la courbe.
+                    </p>
+                  </div>
+                ) : (
+                  <div style={S.card}>
+                    <p style={{ ...S.label, marginBottom: 12 }}>Charge max par séance (kg)</p>
+                    <ResponsiveContainer width="100%" height={180}>
+                      <LineChart data={history} margin={{ top: 5, right: 10, left: -10, bottom: 5 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+                        <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#9ca3af' }} />
+                        <YAxis tick={{ fontSize: 11, fill: '#9ca3af' }} domain={['auto', 'auto']} />
+                        <Tooltip formatter={v => [`${v} kg`, 'Max']} contentStyle={{ fontSize: 13, borderRadius: 10, border: '1px solid #e5e7eb' }} />
+                        <Line type="monotone" dataKey="maxW" stroke="#16a34a" strokeWidth={2.5} dot={{ r: 5, fill: '#16a34a', strokeWidth: 0 }} activeDot={{ r: 7 }} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+              </>
+            )
+          )}
+
+          {/* Poids corporel */}
+          {statsSubTab === 'body' && (
+            <div style={{ marginTop: 10 }}>
+              {bwData.length < 2 ? (
+                <div style={{ textAlign: 'center', padding: '30px 0', color: '#9ca3af' }}>
+                  <i className="ti ti-scale" style={{ fontSize: 48, color: '#e5e7eb', display: 'block', marginBottom: 10 }} aria-hidden="true"></i>
+                  <p style={{ fontSize: 14 }}>Ajoute ton poids dans Profil<br />pour voir la courbe ici.</p>
+                </div>
+              ) : (
+                <div style={S.card}>
+                  <p style={{ ...S.label, marginBottom: 12 }}>Évolution du poids corporel (kg)</p>
+                  <ResponsiveContainer width="100%" height={200}>
+                    <LineChart data={bwData} margin={{ top: 5, right: 10, left: -10, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+                      <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#9ca3af' }} />
+                      <YAxis tick={{ fontSize: 11, fill: '#9ca3af' }} domain={['auto', 'auto']} />
+                      <Tooltip formatter={v => [`${v} kg`, 'Poids']} contentStyle={{ fontSize: 13, borderRadius: 10, border: '1px solid #e5e7eb' }} />
+                      <Line type="monotone" dataKey="poids" stroke="#0891b2" strokeWidth={2.5} dot={{ r: 5, fill: '#0891b2', strokeWidth: 0 }} activeDot={{ r: 7 }} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+              <div style={{ marginTop: 16 }}>
+                {[...(data.bodyStats || [])].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 20).map(s => (
+                  <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '9px 4px', borderBottom: '1px solid #f3f4f6' }}>
+                    <span style={S.label}>{formatDate(s.date)}</span>
+                    <span style={{ fontSize: 14, fontWeight: 600, color: '#111' }}>{s.weight} kg</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+        <BottomNav />
+      </div>
+    );
+  }
+
+  // ══════════════════════════════════════════════
+  // ONGLET : Profil
+  // ══════════════════════════════════════════════
+  if (tab === 'profile') {
+    const sortedStats = [...(data.bodyStats || [])].sort((a, b) => b.date.localeCompare(a.date));
+    const latestBodyWeight = sortedStats[0]?.weight;
+    const totalSessions = data.sessions.length;
+    const totalExercises = getAllExerciseNames(data).length;
+    const totalSets = data.sessions.reduce((a, s) => a + s.exercises.reduce((b, e) => b + e.sets.length, 0), 0);
+
+    return (
+      <div style={S.root}>
+        <div style={S.header}><h1 style={S.headerTitle}>Mon profil</h1></div>
+        <div style={S.body}>
+
+          {/* Mensurations */}
+          <div style={{ display: 'flex', gap: 8, marginTop: 10, marginBottom: 14 }}>
+            <div style={S.metric}>
+              <div style={S.label}>Poids actuel</div>
+              <div style={{ fontSize: 22, fontWeight: 700 }}>{latestBodyWeight || '—'}<span style={{ fontSize: 12, fontWeight: 400 }}> kg</span></div>
+            </div>
+            <div style={S.metric}>
+              <div style={S.label}>Taille</div>
+              <div style={{ fontSize: 22, fontWeight: 700 }}>{data.height || '—'}<span style={{ fontSize: 12, fontWeight: 400 }}> cm</span></div>
+            </div>
+          </div>
+
+          {/* Statistiques globales */}
+          <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
+            <div style={S.metric}><div style={S.label}>Séances</div><div style={{ fontSize: 22, fontWeight: 700 }}>{totalSessions}</div></div>
+            <div style={S.metric}><div style={S.label}>Exercices</div><div style={{ fontSize: 22, fontWeight: 700 }}>{totalExercises}</div></div>
+            <div style={S.metric}><div style={S.label}>Séries totales</div><div style={{ fontSize: 22, fontWeight: 700 }}>{totalSets}</div></div>
+          </div>
+{/* Bibliothèque d'exercices */}
+<div style={{ marginTop: 22 }}>
+  <p style={{ ...S.label, marginBottom: 8 }}>Bibliothèque d’exercices</p>
+
+  {(data.exerciseLibrary || []).length === 0 ? (
+    <p style={{ color: '#9ca3af', fontSize: 14 }}>
+      Aucun exercice enregistré.
+    </p>
+  ) : (
+    (data.exerciseLibrary || []).map(ex => (
+      <div key={ex.id} style={S.card}>
+        <div style={S.value}>{ex.name}</div>
+        {ex.note && (
+          <div style={{ ...S.label, marginTop: 5 }}>
+            {ex.note}
+          </div>
+        )}
+      </div>
+    ))
+  )}
+</div>
+          <p style={{ ...S.label, marginBottom: 7 }}>Ajouter une pesée</p>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+            <input style={S.input} type="number" inputMode="decimal" placeholder="Poids (kg)" value={newBodyWeight} onChange={e => setNewBodyWeight(e.target.value)} onKeyDown={e => e.key === 'Enter' && addBodyWeight()} />
+            <button style={S.greenButton} onClick={addBodyWeight}>OK</button>
+          </div>
+
+          <p style={{ ...S.label, marginBottom: 7 }}>Mettre à jour ma taille</p>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 24 }}>
+            <input style={S.input} type="number" inputMode="decimal" placeholder="Taille (cm)" value={newHeight} onChange={e => setNewHeight(e.target.value)} onKeyDown={e => e.key === 'Enter' && saveHeight()} />
+            <button style={S.greenButton} onClick={saveHeight}>OK</button>
+          </div>
+
+          {sortedStats.length > 0 && (
+            <>
+              <p style={{ ...S.label, marginBottom: 8 }}>Historique du poids ({sortedStats.length} entrée{sortedStats.length > 1 ? 's' : ''})</p>
+              {sortedStats.slice(0, 20).map(s => (
+                <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '9px 4px', borderBottom: '1px solid #f3f4f6' }}>
+                  <span style={S.label}>{formatDate(s.date)}</span>
+                  <span style={{ fontSize: 14, fontWeight: 600, color: '#111' }}>{s.weight} kg</span>
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+        <BottomNav />
+      </div>
+    );
+  }
+
+  // ══════════════════════════════════════════════
+  // ONGLET : Liste des séances (page d'accueil)
+  // ══════════════════════════════════════════════
+  return (
+    <div style={S.root}>
+      <div style={S.header}>
+        {/* Titre de l'app — modifie ici pour changer le nom */}
+        <h1 style={{ ...S.headerTitle, fontSize: 22 }}>The New Workout Plan 💪</h1>
+        <p style={S.headerSubtitle}>
+          {data.sessions.length} séance{data.sessions.length !== 1 ? 's' : ''} enregistrée{data.sessions.length !== 1 ? 's' : ''}
+        </p>
+      </div>
+
+      <div style={S.body}>
+        {/* Formulaire nouvelle séance */}
+        {showNewSession ? (
+          <div style={{ ...S.card, marginTop: 8, marginBottom: 12 }}>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+              <input
+                style={S.input} placeholder="Nom (Push, Pull, Jambes...)"
+                value={newSessionName} onChange={e => setNewSessionName(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && addSession()} autoFocus
+              />
+              <button style={S.ghostButton} onClick={() => { setShowNewSession(false); setNewSessionName(''); setNewSessionMode('empty'); setNewSessionFrom(''); }}>
+                <i className="ti ti-x" aria-hidden="true"></i>
+              </button>
+            </div>
+
+            {/* Modes de création */}
+            <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
+              <button style={S.modeButton(newSessionMode === 'empty')}   onClick={() => setNewSessionMode('empty')}>Vide</button>
+              <button style={S.modeButton(newSessionMode === 'routine')} onClick={() => { setNewSessionMode('routine'); setNewSessionFrom(data.routines[0]?.id || ''); }}>Routine</button>
+              <button style={S.modeButton(newSessionMode === 'copy')}    onClick={() => { setNewSessionMode('copy');    setNewSessionFrom(data.sessions[0]?.id || ''); }}>Copier séance</button>
+            </div>
+
+            {newSessionMode === 'routine' && (
+              data.routines.length === 0 ? (
+                <p style={{ fontSize: 12, color: '#9ca3af', marginBottom: 12, padding: '10px', background: '#f9fafb', borderRadius: 8, lineHeight: 1.5 }}>
+                  Aucune routine sauvegardée.<br />
+                  Crée d'abord une séance puis clique "Sauvegarder comme routine".
+                </p>
+              ) : (
+                <select style={{ ...S.input, width: '100%', marginBottom: 12 }} value={newSessionFrom} onChange={e => setNewSessionFrom(e.target.value)}>
+                  {data.routines.map(r => <option key={r.id} value={r.id}>{r.name} ({r.exercises.length} exercices)</option>)}
+                </select>
+              )
+            )}
+
+            {newSessionMode === 'copy' && (
+              data.sessions.length === 0 ? (
+                <p style={{ fontSize: 12, color: '#9ca3af', marginBottom: 12 }}>Aucune séance à copier.</p>
+              ) : (
+                <select style={{ ...S.input, width: '100%', marginBottom: 12 }} value={newSessionFrom} onChange={e => setNewSessionFrom(e.target.value)}>
+                  {data.sessions.map(s => <option key={s.id} value={s.id}>{s.name} — {formatDate(s.date)}</option>)}
+                </select>
+              )
+            )}
+
+            <button style={{ ...S.greenButton, width: '100%', padding: '12px', fontSize: 15 }} onClick={addSession}>
+              Créer la séance
+            </button>
+          </div>
+        ) : (
+          <button style={{ ...S.greenButton, width: '100%', marginTop: 8, marginBottom: 12, padding: '13px', fontSize: 15 }} onClick={() => setShowNewSession(true)}>
+            <i className="ti ti-plus" aria-hidden="true"></i> Nouvelle séance
+          </button>
+        )}
+
+        {/* Routines sauvegardées */}
+        {data.routines && data.routines.length > 0 && (
+          <div style={{ marginBottom: 16 }}>
+            <p style={{ ...S.label, marginBottom: 8 }}>Mes routines</p>
+            {data.routines.map(r => (
+              <div key={r.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '9px 12px', background: '#f0fdf4', borderRadius: 10, marginBottom: 5, border: '1px solid #bbf7d0' }}>
+                <div style={{ overflow: 'hidden', flex: 1 }}>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: '#15803d' }}>{r.name}</span>
+                  <span style={{ fontSize: 11, color: '#4ade80', marginLeft: 8 }}>
+                    {r.exercises.slice(0, 3).join(' · ')}{r.exercises.length > 3 ? ` +${r.exercises.length - 3} ex.` : ''}
+                  </span>
+                </div>
+                <button style={S.ghostButton} onClick={() => deleteRoutine(r.id)}>
+                  <i className="ti ti-x" style={{ fontSize: 14, color: '#86efac' }} aria-hidden="true"></i>
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Liste des séances */}
+        {data.sessions.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '50px 0', color: '#9ca3af' }}>
+            <i className="ti ti-barbell" style={{ fontSize: 56, color: '#e5e7eb', display: 'block', marginBottom: 14 }} aria-hidden="true"></i>
+            <p style={{ fontSize: 15, lineHeight: 1.7 }}>Aucune séance pour l'instant.<br />Crée ta première séance !</p>
+          </div>
+        ) : (
+          data.sessions.map(s => {
+            const t = calcTonnage(s);
+            const sets = s.exercises.reduce((a, e) => a + e.sets.length, 0);
+            return (
+              <div key={s.id} style={{ ...S.card, cursor: 'pointer' }} onClick={() => setSessionId(s.id)}>
+                <div style={S.row}>
+                  <div style={{ flex: 1 }}>
+                    <div style={S.value}>{s.name}</div>
+                    <div style={{ ...S.label, marginTop: 3 }}>
+                      {formatDate(s.date)} · {s.exercises.length} ex. · {sets} série{sets !== 1 ? 's' : ''}
+                      {t > 0 && <span style={{ color: '#2563eb', fontWeight: 600 }}> · {t} kg</span>}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <button style={S.ghostButton} onClick={e => { e.stopPropagation(); renameSession(s.id); }}>
+  <i className="ti ti-pencil" style={{ fontSize: 17, color: '#6b7280' }} aria-hidden="true"></i>
+</button>
+                    <button style={S.ghostButton} onClick={e => { e.stopPropagation(); deleteSession(s.id); }}>
+                      <i className="ti ti-trash" style={{ fontSize: 17, color: '#ef4444' }} aria-hidden="true"></i>
+                    </button>
+                    <i className="ti ti-chevron-right" style={{ color: '#d1d5db', fontSize: 20 }} aria-hidden="true"></i>
+                  </div>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+      <BottomNav />
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
